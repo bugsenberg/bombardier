@@ -36,9 +36,10 @@ type bombardier struct {
 	ratelimiter limiter
 	wg          sync.WaitGroup
 
-	timeTaken time.Duration
-	latencies *uhist.Histogram
-	requests  *fhist.Histogram
+	timeTaken    time.Duration
+	latencies    *uhist.Histogram
+	latencies2xx *uhist.Histogram
+	requests     *fhist.Histogram
 
 	client   client
 	doneChan chan struct{}
@@ -66,6 +67,7 @@ func newBombardier(c config) (*bombardier, error) {
 	b := new(bombardier)
 	b.conf = c
 	b.latencies = uhist.Default()
+	b.latencies2xx = uhist.Default()
 	b.requests = fhist.Default()
 
 	if b.conf.testType() == counted {
@@ -236,6 +238,7 @@ func (b *bombardier) writeStatistics(
 		counter = &b.req1xx
 	case 2:
 		counter = &b.req2xx
+		b.latencies2xx.Increment(usTaken)
 	case 3:
 		counter = &b.req3xx
 	case 4:
@@ -388,8 +391,9 @@ func (b *bombardier) gatherInfo() internal.TestInfo {
 			Req5XX: b.req5xx,
 			Others: b.others,
 
-			Latencies: b.latencies,
-			Requests:  b.requests,
+			Latencies:    b.latencies,
+			Latencies2XX: b.latencies2xx,
+			Requests:     b.requests,
 		},
 	}
 

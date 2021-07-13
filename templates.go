@@ -45,9 +45,15 @@ const (
 {{ with .Result.LatenciesStats (FloatsToArray 0.5 0.75 0.9 0.95 0.99) }}
 	{{- printf "  %-10v %10v %10v %10v" "Latency" (FormatTimeUs .Mean) (FormatTimeUs .Stddev) (FormatTimeUs .Max) }}
 	{{- if WithLatencies }}
-  		{{- "\n  Latency Distribution" }}
+  		{{- "\n  Latency Distribution (Total)" }}
 		{{- range $pc, $lat := .Percentiles }}
 			{{- printf "\n     %2.0f%% %10s" (Multiply $pc 100) (FormatTimeUsUint64 $lat) -}}
+		{{ end -}}
+		{{- if .Percentiles2xx }}
+			{{- "\n  Latency Distribution (2xx)" }}
+			{{- range $pc, $lat := .Percentiles2xx }}
+				{{- printf "\n     %2.0f%% %10s" (Multiply $pc 100) (FormatTimeUsUint64 $lat) -}}
+			{{ end -}}
 		{{ end -}}
 	{{ end }}
 {{ else }}
@@ -146,6 +152,12 @@ const (
 {{- if WithLatencies -}}
 ,"percentiles":{
 {{- range $pc, $lat := .Percentiles }}
+{{- if ne $pc 0.5 -}},{{- end -}}
+{{- printf "\"%2.0f\":%d" (Multiply $pc 100) $lat -}}
+{{- end -}}
+},
+"percentiles2xx":{
+{{- range $pc, $lat := .Percentiles2xx }}
 {{- if ne $pc 0.5 -}},{{- end -}}
 {{- printf "\"%2.0f\":%d" (Multiply $pc 100) $lat -}}
 {{- end -}}

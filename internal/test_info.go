@@ -2,7 +2,6 @@ package internal
 
 import (
 	"math"
-	"sort"
 	"time"
 )
 
@@ -83,22 +82,9 @@ type Results struct {
 
 	Errors []ErrorWithCount
 
-	Latencies ReadonlyUint64Histogram
-	Requests  ReadonlyFloat64Histogram
-}
-
-// ReadonlyUint64Histogram is a readonly histogram with uint64 keys
-type ReadonlyUint64Histogram interface {
-	Get(uint64) uint64
-	VisitAll(func(uint64, uint64) bool)
-	Count() uint64
-}
-
-// ReadonlyFloat64Histogram is a readonly histogram with float64 keys
-type ReadonlyFloat64Histogram interface {
-	Get(float64) uint64
-	VisitAll(func(float64, uint64) bool)
-	Count() uint64
+	Latencies    ReadonlyUint64Histogram
+	Latencies2XX ReadonlyUint64Histogram
+	Requests     ReadonlyFloat64Histogram
 }
 
 // Throughput returns total throughput (read + write) in bytes per
@@ -115,73 +101,45 @@ type LatenciesStats struct {
 	Max    float64
 
 	// This is  map[0.0 <= p <= 1.0 (percentile)]microseconds
-	Percentiles map[float64]uint64
+	Percentiles    map[float64]uint64
+	Percentiles2xx map[float64]uint64
 }
 
 // LatenciesStats performs various statistical calculations on
 // latencies.
 func (r Results) LatenciesStats(percentiles []float64) *LatenciesStats {
-	h := r.Latencies
-	sum := uint64(0)
-	count := uint64(0)
-	max := uint64(0)
-	pairs := make([]struct{ k, v uint64 }, 0, h.Count())
-
 	// Gather all the data
-	h.VisitAll(func(f uint64, c uint64) bool {
-		if f > max {
-			max = f
-		}
-		sum += f * c
-		count += c
-		pairs = append(pairs, struct{ k, v uint64 }{f, c})
-		return true
-	})
-	if count < 1 {
+	latenciesAggregates, err := NewUint64HistogramAggregates(r.Latencies)
+	if err != nil {
 		return nil
+	}
+	percentilesMap2xx := make(map[float64]uint64, 0)
+	latenciesAggregates2xx, err := NewUint64HistogramAggregates(r.Latencies2XX)
+	if err == nil {
+		percentilesMap2xx = latenciesAggregates2xx.percentilesMap(percentiles)
 	}
 
 	// Calculate percentiles
-	sort.Slice(pairs, func(i, j int) bool {
-		return pairs[i].k < pairs[j].k
-	})
-	percentilesMap := map[float64]uint64{}
-	for _, pc := range percentiles {
-		if _, calculated := percentilesMap[pc]; calculated {
-			continue
-		}
-		if pc < 0 || pc > 1 {
-			// Drop percentiles outside of [0, 1] range
-			continue
-		}
-		rank := uint64(pc*float64(count) + 0.5)
-		total := uint64(0)
-		for _, p := range pairs {
-			total += p.v
-			if total >= rank {
-				percentilesMap[pc] = p.k
-				break
-			}
-		}
-	}
+	percentilesMap := latenciesAggregates.percentilesMap(percentiles)
 
 	// Calculate mean and standard deviation
-	mean := float64(sum) / float64(count)
+	mean := float64(latenciesAggregates.Sum) / float64(latenciesAggregates.Count)
 	sumOfSquares := float64(0)
-	h.VisitAll(func(f uint64, c uint64) bool {
+	r.Latencies.VisitAll(func(f uint64, c uint64) bool {
 		sumOfSquares += math.Pow(float64(f)-mean, 2)
 		return true
 	})
 	stddev := 0.0
-	if count > 2 {
-		stddev = math.Sqrt(sumOfSquares / float64(count))
+	if latenciesAggregates.Count > 2 {
+		stddev = math.Sqrt(sumOfSquares / float64(latenciesAggregates.Count))
 	}
 	return &LatenciesStats{
 		Mean:   mean,
 		Stddev: stddev,
-		Max:    float64(max),
+		Max:    float64(latenciesAggregates.Max),
 
-		Percentiles: percentilesMap,
+		Percentiles:    percentilesMap,
+		Percentiles2xx: percentilesMap2xx,
 	}
 }
 
@@ -200,60 +158,18 @@ type RequestsStats struct {
 // latencies.
 func (r Results) RequestsStats(percentiles []float64) *RequestsStats {
 	h := r.Requests
-	sum := float64(0)
-	count := uint64(0)
-	max := float64(0)
-	pairs := make([]struct {
-		k float64
-		v uint64
-	}, 0, h.Count())
 
 	// Gather all the data
-	h.VisitAll(func(f float64, c uint64) bool {
-		if math.IsInf(f, 0) || math.IsNaN(f) {
-			return true
-		}
-		if f > max {
-			max = f
-		}
-		sum += f * float64(c)
-		count += c
-		pairs = append(pairs, struct {
-			k float64
-			v uint64
-		}{f, c})
-		return true
-	})
-	if count < 1 {
+	requestAggregates, err := NewFloat64HistogramAggregates(h)
+	if err != nil {
 		return nil
 	}
 
 	// Calculate percentiles
-	sort.Slice(pairs, func(i, j int) bool {
-		return pairs[i].k < pairs[j].k
-	})
-	percentilesMap := map[float64]float64{}
-	for _, pc := range percentiles {
-		if _, calculated := percentilesMap[pc]; calculated {
-			continue
-		}
-		if pc < 0 || pc > 1 {
-			// Drop percentiles outside of [0, 1] range
-			continue
-		}
-		rank := uint64(pc*float64(count) + 0.5)
-		total := uint64(0)
-		for _, p := range pairs {
-			total += p.v
-			if total >= rank {
-				percentilesMap[pc] = p.k
-				break
-			}
-		}
-	}
+	percentilesMap := requestAggregates.percentilesMap(percentiles)
 
 	// Calculate mean and standard deviation
-	mean := sum / float64(count)
+	mean := requestAggregates.Sum / float64(requestAggregates.Count)
 	sumOfSquares := float64(0)
 	h.VisitAll(func(f float64, c uint64) bool {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
@@ -263,13 +179,13 @@ func (r Results) RequestsStats(percentiles []float64) *RequestsStats {
 		return true
 	})
 	stddev := 0.0
-	if count > 2 {
-		stddev = math.Sqrt(sumOfSquares / float64(count))
+	if requestAggregates.Count > 2 {
+		stddev = math.Sqrt(sumOfSquares / float64(requestAggregates.Count))
 	}
 	return &RequestsStats{
 		Mean:   mean,
 		Stddev: stddev,
-		Max:    max,
+		Max:    requestAggregates.Max,
 
 		Percentiles: percentilesMap,
 	}
